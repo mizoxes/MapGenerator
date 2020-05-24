@@ -1,3 +1,6 @@
+// this program generates a heightmap using Perlin noise algorithm
+// and saves it as a ppm file and then loads and applies it to a 2D grid
+
 // Windows stuff
 #include <windows.h>
 #include <d3d11.h>
@@ -15,15 +18,10 @@ using namespace DirectX;
 
 // my stuff
 #include "PerlinNoise.h"
+#include "ppm.h"
+#include "Terrain.h"
 
 // Structures
-struct Vertex
-{
-	XMFLOAT3 Position;
-	XMFLOAT3 Normal;
-	Vertex(float x, float y, float z, float nx, float ny, float nz) :Position(x, y, z), Normal(nx, ny, nz) {}
-};
-
 struct ConstantBuffer
 {
 	XMFLOAT4X4 mWorld;
@@ -51,10 +49,9 @@ UINT                    g_IndexCount = 0;
 XMMATRIX				g_World;
 XMMATRIX				g_View;
 XMMATRIX				g_Projection;
-float                   g_fRadius = 20.0f;
+float                   g_fRadius = 500.0f;
 float                   g_fPhi = 0.35f * XM_PI;
 float                   g_fTheta = 1.3f * XM_PI;
-
 
 // Function prototypes
 bool InitWindow(HINSTANCE hInstance);
@@ -64,12 +61,32 @@ LRESULT CALLBACK MessageHandler(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lPar
 void Update(float deltaTime);
 void Render();
 
-void GenerateGrid(float width, float depth, int m, int n, std::vector<Vertex>& vertices, std::vector<UINT>& indices);
-
 
 // Entry point
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow)
 {
+	constexpr int img_width = 256;
+	constexpr int img_height = 256;
+	ppm image(img_width, img_height);
+	PerlinNoise pn(237);
+	int kk = 0;
+	for (int i = 0; i < img_height; ++i)
+	{
+		for (int j = 0; j < img_width; ++j)
+		{
+			double x = j / (double)img_width;
+			double y = i / (double)img_height;
+
+			double n = pn.noise(10 * x, 10 * y, 0.8);
+
+			image.r[kk] = floor(n * 255);
+			image.g[kk] = floor(n * 255);
+			image.b[kk] = floor(n * 255);
+			kk++;
+		}
+	}
+	image.write("perlin.ppm");
+
 	if (!InitWindow(hInstance))
 		return 0;
 
@@ -78,6 +95,10 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 		CleanupDirect3D();
 		return 0;
 	}
+
+	__int64 current, previous, frequency;
+	QueryPerformanceFrequency((LARGE_INTEGER*)&frequency);
+	previous = 0;
 
 	MSG msg = { 0 };
 	while (WM_QUIT != msg.message)
@@ -89,7 +110,11 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 		}
 		else
 		{
-			Update(0.0f);
+			QueryPerformanceCounter((LARGE_INTEGER*)&current);
+			float deltaTime = (float)(current - previous) / frequency;
+			previous = current;
+
+			Update(deltaTime);
 			Render();
 		}
 	}
@@ -281,61 +306,19 @@ bool InitDirect3D()
 		return false;
 	}
 
-	std::vector<Vertex> vertices;
-	std::vector<UINT> indices;
+	Terrain terrain("perlin.ppm");
 
-	int m = 80;
-	int n = 80;
-
-	GenerateGrid(40.0f, 40.0f, m, n, vertices, indices);
-
-	PerlinNoise pn(237);
-	// Apply noise to grid
-	for (int i = 0; i <= n; ++i)
-	{
-		for (int j = 0; j <= m; ++j)
-		{
-			vertices[j + i * (m + 1)].Position.y = (float)pn.noise(j, i, 0.8);
-			vertices[j + i * (m + 1)].Position.y -= floorf(vertices[j + i * (m + 1)].Position.y);
-		}
-	}
-
-	auto getHeight = [&](int x, int y)
-	{
-		if (x < 0 || x >= m ||
-			y < 0 || y >= n)
-		{
-			return 0.0f;
-		}
-		return vertices[x + y * (m + 1)].Position.y;
-	};
-
-	// Fix normals
-	for (int i = 0; i <= n; ++i)
-	{
-		for (int j = 0; j <= m; ++j)
-		{
-			float heightL = getHeight(j - 1, i);
-			float heightR = getHeight(j + 1, i);
-			float heightD = getHeight(j, i + 1);
-			float heightU = getHeight(j, i - 1);
-
-			XMVECTOR normal = XMVectorSet(heightL - heightR, 2.0f, heightD - heightU, 0.0f);
-			XMStoreFloat3(&vertices[j + i * (m + 1)].Normal, normal);
-		}
-	}
-
-	g_IndexCount = indices.size();
+	g_IndexCount = terrain.indices.size();
 
 	D3D11_BUFFER_DESC bd;
-	bd.ByteWidth = sizeof(Vertex) * vertices.size();
+	bd.ByteWidth = sizeof(Vertex) * terrain.vertices.size();
 	bd.Usage = D3D11_USAGE_IMMUTABLE;
 	bd.BindFlags = D3D11_BIND_VERTEX_BUFFER;
 	bd.CPUAccessFlags = 0;
 	bd.MiscFlags = 0;
 	bd.StructureByteStride = 0;
 	D3D11_SUBRESOURCE_DATA initData;
-	initData.pSysMem = &vertices[0];
+	initData.pSysMem = &terrain.vertices[0];
 	initData.SysMemPitch = 0;
 	initData.SysMemSlicePitch = 0;
 	hr = g_pd3dDevice->CreateBuffer(&bd, &initData, &g_pVertexBuffer);
@@ -346,13 +329,13 @@ bool InitDirect3D()
 	UINT offset = 0;
 	g_pImmediateContext->IASetVertexBuffers(0, 1, &g_pVertexBuffer, &stride, &offset);
 
-	bd.ByteWidth = sizeof(UINT) * indices.size();
+	bd.ByteWidth = sizeof(UINT) * terrain.indices.size();
 	bd.Usage = D3D11_USAGE_IMMUTABLE;
 	bd.BindFlags = D3D11_BIND_INDEX_BUFFER;
 	bd.CPUAccessFlags = 0;
 	bd.MiscFlags = 0;
 	bd.StructureByteStride = 0;
-	initData.pSysMem = &indices[0];
+	initData.pSysMem = &terrain.indices[0];
 	initData.SysMemPitch = 0;
 	initData.SysMemSlicePitch = 0;
 	hr = g_pd3dDevice->CreateBuffer(&bd, &initData, &g_pIndexBuffer);
@@ -386,7 +369,7 @@ bool InitDirect3D()
 	//g_pImmediateContext->RSSetState(g_pRSWireframe);
 
 	g_World = XMMatrixIdentity();
-	g_Projection = XMMatrixPerspectiveFovLH(XM_PIDIV4, width / (float)height, 0.1f, 1000.0f);
+	g_Projection = XMMatrixPerspectiveFovLH(XM_PIDIV4, width / (float)height, 0.1f, 5000.0f);
 
 	return true;
 }
@@ -432,13 +415,13 @@ LRESULT CALLBACK MessageHandler(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lPar
 void Update(float deltaTime)
 {
 	if (GetAsyncKeyState(VK_LEFT))
-		g_fTheta -= 0.01f;
+		g_fTheta -= deltaTime * 1.5f;
 	else if (GetAsyncKeyState(VK_RIGHT))
-		g_fTheta += 0.01f;
+		g_fTheta += deltaTime * 1.5f;
 	if (GetAsyncKeyState(VK_UP))
-		g_fRadius -= 0.1f;
+		g_fRadius -= deltaTime * 200.0f;
 	if (GetAsyncKeyState(VK_DOWN))
-		g_fRadius += 0.1f;
+		g_fRadius += deltaTime * 200.0f;
 
 	// Convert spherical to cartesian
 	float x = g_fRadius * sinf(g_fPhi) * cosf(g_fTheta);
@@ -470,37 +453,4 @@ void Render()
 	g_pImmediateContext->DrawIndexed(g_IndexCount, 0, 0);
 
 	g_pSwapChain->Present(1, 0);
-}
-
-void GenerateGrid(float width, float depth, int m, int n, std::vector<Vertex>& vertices, std::vector<UINT>& indices)
-{
-	float dx = width / m;
-	float dz = depth / n;
-
-	for (int i = 0; i < n + 1; i++)
-	{
-		float z = depth / 2.0f - i * dz;
-		for (int j = 0; j < m + 1; j++)
-		{
-			float x = -width / 2.0f + j * dx;
-			vertices.push_back(
-			    Vertex(
-				    x, 0.0f, z,          // Position
-				    0.0f, 1.0f, 0.0f)    // Normal
-			    );  
-		}
-	}
-
-	for (int i = 0; i < n; i++)
-	{
-		for (int j = 0; j < m; j++)
-		{
-			indices.push_back(j + (m + 1) * i);
-			indices.push_back(j + 1 + (m + 1) * i);
-			indices.push_back(j + (m + 1) * (i + 1));
-			indices.push_back(j + (m + 1) * (i + 1));
-			indices.push_back(j + 1 + (m + 1) * i);
-			indices.push_back(j + 1 + (m + 1) * (i + 1));
-		}
-	}
 }
