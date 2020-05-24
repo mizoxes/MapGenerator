@@ -2,3 +2,4 @@ This program generates a heightmap using Perlin noise algorithm and saves it as 
 
 <img src="https://imgur.com/pHSd7FM"/>
 <img src="https://imgur.com/9m9aBkf"/>
+![image](https://imgur.com/9m9aBkf)
